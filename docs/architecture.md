@@ -79,7 +79,7 @@ erDiagram
     DOCUMENT ||--o{ CLASSIFICATION : produces
     
     DOCUMENT {
-        string pk "tenantId#documentId"
+        string _pk "tenantId#documentId"
         string sk "v1"
         string status "RECEIVED | EXTRACTED | CLASSIFIED | FINALIZED"
         string s3Pointer "s3://..."
