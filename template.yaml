@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Vehicle Title Classification Pipeline
+
+Resources:
+  # DynamoDB Table
+  VehicleTitleRecords:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: pk
+        Type: String
+      # sk is not supported by SimpleTable directly if we need composite, 
+      # but for demo we can use a full DynamoDB table resource.
+
+  # Full DynamoDB Table for composite keys
+  VehicleTitleTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: VehicleTitleRecords
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+
+  # Ingestion Lambda
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: lambdas.ingest.handler.handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref VehicleTitleTable
+          STATE_MACHINE_ARN: !Ref ClassificationStateMachine
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VehicleTitleTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt ClassificationStateMachine.Name
+        - S3ReadPolicy:
+            BucketName: "*" # Should be specific in production
+
+  # Textract Lambda
+  TextractFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: lambdas.textract_extractor.handler.handler
+      Runtime: python3.9
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: 'textract:DetectDocumentText'
+              Resource: '*'
+
+  # Process Results Lambda
+  ProcessResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: lambdas.process_results.handler.handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref VehicleTitleTable
+          BEDROCK_MODEL_ID: 'anthropic.claude-3-sonnet-20240229-v1:0'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VehicleTitleTable
+        - Statement:
+            - Effect: Allow
+              Action: 'bedrock:InvokeModel'
+              Resource: '*'
+
+  # Step Functions State Machine
+  ClassificationStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/definition.asl.json
+      DefinitionSubstitutions:
+        TextractFunctionArn: !GetAtt TextractFunction.Arn
+        ProcessResultsFunctionArn: !GetAtt ProcessResultsFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TextractFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessResultsFunction
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VehicleTitleTable
+        - EventBridgePutEventsPolicy:
+            Source: "manheim.titles.classification"

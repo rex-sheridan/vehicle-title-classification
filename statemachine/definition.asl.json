@@ -1,0 +1,111 @@
+{
+    "Comment": "Vehicle Title Classification Pipeline",
+    "StartAt": "ExtractText",
+    "States": {
+        "ExtractText": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "arn:aws:lambda:region:account:function:TextractExtractor",
+                "Payload": {
+                    "s3Pointer.$": "$.s3Pointer",
+                    "documentId.$": "$.documentId",
+                    "tenantId.$": "$.tenantId"
+                }
+            },
+            "ResultPath": "$.textractOutput",
+            "Next": "UpdateStatusExtracted"
+        },
+        "UpdateStatusExtracted": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Parameters": {
+                "TableName": "VehicleTitleRecords",
+                "Key": {
+                    "pk": {
+                        "S.$": "States.Format('{}#{}', $.tenantId, $.documentId)"
+                    },
+                    "sk": {
+                        "S": "v1"
+                    }
+                },
+                "UpdateExpression": "SET #s = :s, updatedAt = :u",
+                "ExpressionAttributeNames": {
+                    "#s": "status"
+                },
+                "ExpressionAttributeValues": {
+                    ":s": {
+                        "S": "EXTRACTED"
+                    },
+                    ":u": {
+                        "S.$": "$$.Execution.StartTime"
+                    }
+                }
+            },
+            "ResultPath": null,
+            "Next": "ClassifyAndDecide"
+        },
+        "ClassifyAndDecide": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "arn:aws:lambda:region:account:function:ProcessResults",
+                "Payload": {
+                    "documentId.$": "$.documentId",
+                    "tenantId.$": "$.tenantId",
+                    "textractOutput.$": "$.textractOutput.Payload"
+                }
+            },
+            "ResultPath": "$.decisionOutput",
+            "Next": "CheckDecision"
+        },
+        "CheckDecision": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.decisionOutput.Payload.status",
+                    "StringEquals": "FINALIZED",
+                    "Next": "PublishEvent"
+                },
+                {
+                    "Variable": "$.decisionOutput.Payload.status",
+                    "StringEquals": "REVIEW_REQUIRED",
+                    "Next": "HumanReview"
+                }
+            ],
+            "Default": "HandleError"
+        },
+        "HumanReview": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "arn:aws:lambda:region:account:function:CreateA2ITask",
+                "Payload": "$.decisionOutput.Payload"
+            },
+            "Next": "PublishEvent"
+        },
+        "PublishEvent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "documentId.$": "$.documentId",
+                            "status.$": "$.decisionOutput.Payload.status",
+                            "classification.$": "$.decisionOutput.Payload.classification"
+                        },
+                        "DetailType": "TitleClassified",
+                        "Source": "manheim.titles.classification"
+                    }
+                ]
+            },
+            "End": true
+        },
+        "HandleError": {
+            "Type": "Fail",
+            "Error": "ProcessingError",
+            "Cause": "Unexpected status or error in classification"
+        }
+    }
+}
