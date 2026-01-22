@@ -102,3 +102,9 @@ erDiagram
         string finalDecisionSource "AI | HUMAN"
     }
 ```
+
+## 4. Step Functions Flow
+
+Visualization of the AWS Step Functions workflow orchestration.
+
+![Step Functions Graph](file:///Users/rex/workspace/vehicle-title-classification/docs/stepfunctions_graph.png)
